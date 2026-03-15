@@ -50,12 +50,43 @@ export function checkAutoStartAfterDiscuss(): boolean {
 
   const { ctx, pi, basePath, milestoneId, step } = pendingAutoStart;
 
-  // Don't fire until the discuss phase has actually produced a context file
-  // for the milestone being discussed. agent_end fires after every LLM turn,
-  // including the initial "What do you want to build?" response — we need to
-  // wait for the full conversation to complete and the LLM to write CONTEXT.md.
+  // Gate 1: Primary milestone must have CONTEXT.md
   const contextFile = resolveMilestoneFile(basePath, milestoneId, "CONTEXT");
   if (!contextFile) return false; // no context yet — keep waiting
+
+  // Gate 2: STATE.md must exist — written as the last step in the discuss
+  // output phase. This prevents auto-start from firing during Phase 3
+  // (sequential readiness gates for remaining milestones) in multi-milestone
+  // discussions, where M001-CONTEXT.md exists but M002/M003 haven't been
+  // processed yet.
+  const stateFile = resolveGsdRootFile(basePath, "STATE");
+  if (!stateFile) return false; // discussion not finalized yet
+
+  // Gate 3: Multi-milestone completeness warning
+  // Parse PROJECT.md for milestone sequence, warn if any are missing context.
+  // Don't block — milestones can be intentionally queued without context.
+  const projectFile = resolveGsdRootFile(basePath, "PROJECT");
+  if (projectFile) {
+    try {
+      const projectContent = readFileSync(projectFile, "utf-8");
+      const milestoneIds = parseMilestoneSequenceFromProject(projectContent);
+      if (milestoneIds.length > 1) {
+        const missing = milestoneIds.filter(id => {
+          const hasContext = !!resolveMilestoneFile(basePath, id, "CONTEXT");
+          const hasDraft = !!resolveMilestoneFile(basePath, id, "CONTEXT-DRAFT");
+          const hasDir = existsSync(join(basePath, ".gsd", "milestones", id));
+          return !hasContext && !hasDraft && !hasDir;
+        });
+        if (missing.length > 0) {
+          ctx.ui.notify(
+            `Multi-milestone validation: ${missing.join(", ")} not found in filesystem. ` +
+            `Discussion may not have completed all readiness gates.`,
+            "warning",
+          );
+        }
+      }
+    } catch { /* non-fatal — PROJECT.md parsing failure shouldn't block auto-start */ }
+  }
 
   // Draft promotion cleanup: if a CONTEXT-DRAFT.md exists alongside the new
   // CONTEXT.md, delete the draft — it's been consumed by the discussion.
@@ -67,6 +98,20 @@ export function checkAutoStartAfterDiscuss(): boolean {
   pendingAutoStart = null;
   startAuto(ctx, pi, basePath, false, { step }).catch(() => {});
   return true;
+}
+
+/**
+ * Extract milestone IDs from PROJECT.md milestone sequence table.
+ * Looks for rows like "| M001 | Name | Status |" and extracts the ID column.
+ */
+function parseMilestoneSequenceFromProject(content: string): string[] {
+  const ids: string[] = [];
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^\|\s*(M\d{3}[A-Z0-9-]*)\s*\|/);
+    if (match) ids.push(match[1]);
+  }
+  return ids;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
