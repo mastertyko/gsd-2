@@ -41,4 +41,4 @@ See `.gsd/REQUIREMENTS.md` for the explicit capability contract, requirement sta
 
 - [x] M001: Proactive Secret Management — Front-loaded API key collection into planning so auto-mode runs uninterrupted (10 requirements validated)
 - [x] M002: Browser Tools Performance & Intelligence — Module decomposition, action pipeline optimization, sharp-based screenshots, form intelligence, intent-ranked retrieval, semantic actions, 108-test suite (12 requirements validated)
-- [ ] M003: Worktree-Isolated Git Architecture — Worktree-per-milestone isolation eliminating merge conflicts, self-healing git repair, zero git errors for vibe coders, configurable for senior engineers
+- [ ] M003: Worktree-Isolated Git Architecture — S01-S03 complete (worktree lifecycle, --no-ff slice merges, milestone squash-merge to main). S04-S07 remaining.

@@ -27,6 +27,11 @@ import {
   nativeBranchExists,
   nativeCommitCountBetween,
 } from "./native-git-bridge.js";
+<<<<<<< HEAD
+=======
+import { parseRoadmap } from "./files.js";
+import { loadEffectiveGSDPreferences } from "./preferences.js";
+>>>>>>> gsd/M003/S03
 
 // ─── Module State ──────────────────────────────────────────────────────────
 
@@ -317,3 +322,179 @@ export function mergeSliceToMilestone(
     deletedBranch,
   };
 }
+<<<<<<< HEAD
+=======
+
+// ─── Merge Milestone → Main ───────────────────────────────────────────────
+
+/**
+ * Auto-commit any dirty (uncommitted) state in the given directory.
+ * Returns true if a commit was made, false if working tree was clean.
+ */
+function autoCommitDirtyState(cwd: string): boolean {
+  try {
+    const status = execSync("git status --porcelain", {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    }).trim();
+    if (!status) return false;
+    execSync('git add -A && git commit -m "chore: auto-commit before milestone merge"', {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Squash-merge the milestone branch into main with a rich commit message
+ * listing all completed slices, then tear down the worktree.
+ *
+ * Sequence:
+ *  1. Auto-commit dirty worktree state
+ *  2. chdir to originalBasePath
+ *  3. git checkout main
+ *  4. git merge --squash milestone/<MID>
+ *  5. git commit with rich message
+ *  6. Auto-push if enabled
+ *  7. Delete milestone branch
+ *  8. Remove worktree directory
+ *  9. Clear originalBase
+ *
+ * On merge conflict: throws MergeConflictError.
+ * On "nothing to commit" after squash: handles gracefully (no error).
+ */
+export function mergeMilestoneToMain(
+  originalBasePath_: string,
+  milestoneId: string,
+  roadmapContent: string,
+): { commitMessage: string; pushed: boolean } {
+  const worktreeCwd = process.cwd();
+  const milestoneBranch = autoWorktreeBranch(milestoneId);
+
+  // 1. Auto-commit dirty state in worktree before leaving
+  autoCommitDirtyState(worktreeCwd);
+
+  // 2. Parse roadmap for slice listing
+  const roadmap = parseRoadmap(roadmapContent);
+  const completedSlices = roadmap.slices.filter(s => s.done);
+
+  // 3. chdir to original base
+  const previousCwd = process.cwd();
+  process.chdir(originalBasePath_);
+
+  // 4. Resolve main branch from preferences
+  const prefs = loadEffectiveGSDPreferences()?.preferences?.git ?? {};
+  const mainBranch = prefs.main_branch || "main";
+
+  // 5. Checkout main
+  execSync(`git checkout ${mainBranch}`, {
+    cwd: originalBasePath_,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf-8",
+  });
+
+  // 6. Build rich commit message
+  const milestoneTitle = roadmap.title.replace(/^M\d+:\s*/, "").trim() || milestoneId;
+  const subject = `feat(${milestoneId}): ${milestoneTitle}`;
+  let body = "";
+  if (completedSlices.length > 0) {
+    const sliceLines = completedSlices.map(s => `- ${s.id}: ${s.title}`).join("\n");
+    body = `\n\nCompleted slices:\n${sliceLines}\n\nBranch: ${milestoneBranch}`;
+  }
+  const commitMessage = subject + body;
+
+  // 7. Squash merge
+  try {
+    execSync(`git merge --squash ${milestoneBranch}`, {
+      cwd: originalBasePath_,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    });
+  } catch {
+    // Check for merge conflicts
+    try {
+      const conflictOutput = execSync("git diff --name-only --diff-filter=U", {
+        cwd: originalBasePath_,
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf-8",
+      }).trim();
+      if (conflictOutput) {
+        const conflictedFiles = conflictOutput.split("\n").filter(Boolean);
+        throw new MergeConflictError(
+          conflictedFiles,
+          "merge",
+          milestoneBranch,
+          mainBranch,
+        );
+      }
+    } catch (innerErr) {
+      if (innerErr instanceof MergeConflictError) throw innerErr;
+    }
+    // Possibly "already up to date" — fall through to commit which will handle nothing-to-commit
+  }
+
+  // 8. Commit (handle nothing-to-commit gracefully)
+  let nothingToCommit = false;
+  try {
+    execSync(`git commit -m ${JSON.stringify(commitMessage)}`, {
+      cwd: originalBasePath_,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    });
+  } catch (err: unknown) {
+    // execSync errors have stdout/stderr as properties — check those for git's message
+    const errObj = err as { stdout?: string; stderr?: string; message?: string };
+    const combined = [errObj.stdout, errObj.stderr, errObj.message].filter(Boolean).join(" ");
+    if (combined.includes("nothing to commit") || combined.includes("nothing added to commit") || combined.includes("no changes added")) {
+      nothingToCommit = true;
+    } else {
+      throw err;
+    }
+  }
+
+  // 9. Auto-push if enabled
+  let pushed = false;
+  if (prefs.auto_push === true && !nothingToCommit) {
+    const remote = prefs.remote ?? "origin";
+    try {
+      execSync(`git push ${remote} ${mainBranch}`, {
+        cwd: originalBasePath_,
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf-8",
+      });
+      pushed = true;
+    } catch {
+      // Push failure is non-fatal
+    }
+  }
+
+  // 10. Remove worktree directory first (must happen before branch deletion)
+  try {
+    removeWorktree(originalBasePath_, milestoneId, { branch: null as unknown as string, deleteBranch: false });
+  } catch {
+    // Best-effort — worktree dir may already be gone
+  }
+
+  // 11. Delete milestone branch (after worktree removal so ref is unlocked)
+  try {
+    execSync(`git branch -D ${milestoneBranch}`, {
+      cwd: originalBasePath_,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    });
+  } catch {
+    // Best-effort
+  }
+
+  // 12. Clear module state
+  originalBase = null;
+  nudgeGitBranchCache(previousCwd);
+
+  return { commitMessage, pushed };
+}
+>>>>>>> gsd/M003/S03

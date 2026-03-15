@@ -94,6 +94,10 @@ import {
   getAutoWorktreePath,
   getAutoWorktreeOriginalBase,
   mergeSliceToMilestone,
+<<<<<<< HEAD
+=======
+  mergeMilestoneToMain,
+>>>>>>> gsd/M003/S03
 } from "./auto-worktree.js";
 import type { GitPreferences } from "./git-service.js";
 import { truncateToWidth, visibleWidth } from "@gsd/pi-tui";
@@ -1757,6 +1761,27 @@ async function dispatchNextUnit(
       if (existsSync(file)) writeFileSync(file, JSON.stringify([]), "utf-8");
       completedKeySet.clear();
     } catch { /* non-fatal */ }
+
+    // ── Milestone merge: squash-merge milestone branch to main before stopping ──
+    if (currentMilestoneId && isInAutoWorktree(basePath) && originalBasePath) {
+      try {
+        const roadmapPath = resolveMilestoneFile(originalBasePath, currentMilestoneId, "ROADMAP");
+        const roadmapContent = readFileSync(roadmapPath, "utf-8");
+        const mergeResult = mergeMilestoneToMain(originalBasePath, currentMilestoneId, roadmapContent);
+        basePath = originalBasePath;
+        gitService = new GitServiceImpl(basePath, loadEffectiveGSDPreferences()?.preferences?.git ?? {});
+        ctx.ui.notify(
+          `Milestone ${currentMilestoneId} merged to main.${mergeResult.pushed ? " Pushed to remote." : ""}`,
+          "info",
+        );
+      } catch (err) {
+        ctx.ui.notify(
+          `Milestone merge failed: ${err instanceof Error ? err.message : String(err)}`,
+          "warning",
+        );
+      }
+    }
+
     await stopAuto(ctx, pi);
     return;
   }

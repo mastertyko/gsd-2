@@ -4,75 +4,91 @@
 
 ## Summary
 
-S01 lays the foundation for all DB-backed context in GSD: installing `better-sqlite3`, creating the schema, building typed wrappers for decisions and requirements, creating SQL views that filter out superseded rows, and implementing graceful fallback when the native addon is unavailable.
+S01 builds the SQLite foundation layer: open database, create schema, provide typed wrappers for decisions and requirements tables, expose filtered views (`active_decisions`, `active_requirements`), and gracefully degrade when `better-sqlite3` is unavailable. This slice owns R001, R002, R005, R006, R017, R020, R021 and provides the foundation all later slices depend on.
 
-The codebase already has a battle-tested pattern for optional native modules. `native-parser-bridge.ts` and `native-git-bridge.ts` both use the same `try { require('@gsd/native') } catch {}` pattern with a `loadAttempted` guard and per-function fallback. The DB module should follow this exact pattern — a `gsd-db.ts` bridge that attempts `require('better-sqlite3')` on first access, caches the result, and exposes typed wrappers. When unavailable, `isDbAvailable()` returns false, and all downstream consumers (query layer, prompt builders) fall back to the existing `inlineGsdRootFile()` path with zero code changes.
+Verified: `better-sqlite3@12.8.0` installs cleanly on Node 22.20.0 (ARM64 macOS), compiles a native addon (no prebuilds directory — uses `node-gyp` at install time), WAL mode works on file-backed DBs, and query latency is ~0.012ms — well under the R017 5ms requirement. ESM default import (`import Database from 'better-sqlite3'`) works correctly with the project's `"type": "module"` + `NodeNext` module resolution.
 
-The decisions table maps directly from the current DECISIONS.md markdown table format: `| # | When | Scope | Decision | Choice | Rationale | Revisable? |`. Requirements have a richer structure with `### Rxxx —` headings and `- Field: value` lines under each. Neither has an existing TypeScript parser — `parseRequirementCounts()` only counts headings, and there's no `parseDecision()` at all. S01 needs to define the table schemas; S02 will build the actual markdown parsers. S01's query layer should work with pre-populated data (via direct inserts or tests) without depending on importers.
+The existing `native-parser-bridge.ts` provides a proven lazy-load pattern for optional native modules with graceful fallback. This is the exact pattern to replicate. The project already has optional native dependencies (`@gsd-build/engine-*`, `koffi`) in `optionalDependencies`, so adding `better-sqlite3` there follows established convention.
+
+Key design constraint: the DECISIONS.md table format (`| # | When | Scope | Decision | Choice | Rationale | Revisable? |`) maps cleanly to a relational table with a `superseded_by` column for the `active_decisions` view. REQUIREMENTS.md has a richer per-item structure (9+ fields per requirement under `### Rxx —` headings) requiring a wider table — but individual requirement parsing doesn't exist yet in `files.ts` (only `parseRequirementCounts()` which counts headings). S01 defines the schema; S02 builds the importer.
 
 ## Recommendation
 
-Build three modules: `gsd-db.ts` (database lifecycle + schema), `context-store.ts` (typed query wrappers + formatters), and tests. Follow the native-parser-bridge pattern exactly for optional dependency loading. Use `optionalDependencies` in package.json (matching the existing `@gsd-build/engine-*` pattern). Place `gsd.db` at `.gsd/gsd.db` and add it to the gitignore baseline in `gitignore.ts`.
+Use `better-sqlite3` as an `optionalDependency` with the `native-parser-bridge.ts` lazy-load pattern. Schema versioning via `PRAGMA user_version` (simpler than a separate table — built into SQLite). WAL mode on open. File at `.gsd/gsd.db`. Two new source files:
 
-Schema should use `better-sqlite3`'s sync API throughout since all prompt building is synchronous. WAL mode via `PRAGMA journal_mode=WAL` on every `openDatabase()` call. Schema versioning via a `schema_version` table with forward-only migration functions keyed by version number.
+1. **`gsd-db.ts`** — Low-level DB layer: `openDatabase(dbPath)`, `initSchema()`, `isDbAvailable()`, typed insert/query wrappers for `decisions` and `requirements` tables. Exports the `Database` instance for direct use by higher-level modules.
+
+2. **`context-store.ts`** — Query layer: `queryDecisions(milestoneId?, scope?)`, `queryRequirements(sliceId?, status?)`, format functions that produce markdown-like strings for prompt injection. This is what prompt builders will call (in S03).
+
+Add `gsd.db`, `gsd.db-wal`, `gsd.db-shm` to `BASELINE_PATTERNS` in `gitignore.ts`.
 
 ## Don't Hand-Roll
 
 | Problem | Existing Solution | Why Use It |
 |---------|------------------|------------|
-| SQLite access from Node.js | `better-sqlite3@12.x` | Sync API matches existing sync prompt-building code. Prebuilt binaries for Node 22 on all target platforms. 12.x is current stable. |
-| TypeScript types for better-sqlite3 | `@types/better-sqlite3@7.x` | Accurate types for Database, Statement, Transaction. Dev dependency only. |
-| Optional native module loading | `native-parser-bridge.ts` pattern | Proven `try/catch require()` with `loadAttempted` guard. Identical fallback semantics needed here. |
-| Gitignore management | `gitignore.ts` `BASELINE_PATTERNS` | Just add `".gsd/gsd.db"`, `".gsd/gsd.db-wal"`, `".gsd/gsd.db-shm"` to the existing pattern array. |
-| Test runner | Node built-in `node --test` with `resolve-ts.mjs` hook | Project standard. Custom `createTestContext()` helpers for assertions. |
+| SQLite access from Node.js | `better-sqlite3@12.8.0` | Sync API matches existing sync prompt-building. Native addon with prebuilt/compiled binaries. D001 confirmed this choice as non-revisable. |
+| Schema versioning | `PRAGMA user_version` | Built into SQLite, zero overhead. `db.pragma('user_version', { simple: true })` returns an integer. No extra table needed. |
+| Optional native module loading | `native-parser-bridge.ts` pattern | Lazy load with `loadAttempted` sentinel, try/catch around `require()`. Proven pattern in this codebase. |
+| TS type definitions | `@types/better-sqlite3` | Community-maintained types that match the latest API. Install as `devDependency`. |
 
 ## Existing Code and Patterns
 
-- `src/resources/extensions/gsd/native-parser-bridge.ts` — **Follow this pattern exactly** for optional `better-sqlite3` loading. Lazy `require()` with `loadAttempted` guard, per-function null checks, clean fallback to JS implementations. The key pattern: module-scoped `nativeModule` variable, `loadNative()` function, every public function checks `loadNative()` first.
-- `src/resources/extensions/gsd/native-git-bridge.ts` — Same pattern, second example. Uses `require("@gsd/native")` with try/catch. Exports individual functions that each call `loadNative()`.
-- `src/resources/extensions/gsd/gitignore.ts` — `BASELINE_PATTERNS` array is where `gsd.db` patterns need to be added. Has `ensureGitignore()` that handles idempotent appending.
-- `src/resources/extensions/gsd/files.ts` — `parseRequirementCounts()` at line 627 only counts requirement headings by category. No structured requirement parser exists. No decision parser exists at all. S01 doesn't need parsers (that's S02), but the schema must match the markdown structure.
-- `src/resources/extensions/gsd/auto.ts` — `inlineGsdRootFile()` at line 2492 is the function that loads entire markdown files for prompt injection. Used ~19 times across 9+ prompt builders. This is the integration point S03 will rewire, but S01's `isDbAvailable()` function is the conditional gate.
-- `src/resources/extensions/gsd/types.ts` — Core type definitions. No Decision or Requirement types exist yet — they're loaded as raw markdown strings. S01 should define `Decision` and `Requirement` interfaces here.
-- `src/resources/extensions/gsd/state.ts` — `deriveState()` uses `parseRequirementCounts()` for the state dashboard. S04 will rewire this to DB queries.
-- `src/resources/extensions/gsd/paths.ts` — `gsdRoot()` returns `.gsd/` path. `resolveGsdRootFile()` handles file resolution. The DB path should be `join(gsdRoot(basePath), 'gsd.db')`.
+- `src/resources/extensions/gsd/native-parser-bridge.ts` — **The fallback pattern to replicate.** Lazy `require()` with `loadAttempted` boolean sentinel. Module-level nullable typed reference. Every public function checks `loadNative()` before using native code. Returns `null` or sentinel value on unavailability. Lines 23–43 are the key pattern.
+- `src/resources/extensions/gsd/auto.ts` (line 2499) — `inlineGsdRootFile()` reads entire markdown files and inlines them into prompts. Called 19 times across 9+ prompt builders for `decisions.md`, `requirements.md`, and `project.md`. This is what the context store query layer eventually replaces (S03).
+- `src/resources/extensions/gsd/files.ts` (line 627) — `parseRequirementCounts()` only counts `### Rxx —` headings per section. Does NOT parse individual requirement fields. No decision parser exists at all — decisions are never parsed, just inlined wholesale. S01 defines the target schema; S02 builds parsers.
+- `src/resources/extensions/gsd/paths.ts` (line 157) — `GSD_ROOT_FILES` constant and `resolveGsdRootFile()` handle case-insensitive file lookup with legacy fallback. New DB path should use `gsdRoot(basePath) + '/gsd.db'`.
+- `src/resources/extensions/gsd/gitignore.ts` (line 17) — `BASELINE_PATTERNS` array defines auto-gitignored paths. Must add `gsd.db`, `gsd.db-wal`, `gsd.db-shm` here. The entire `.gsd/` is already in the project's root `.gitignore`, but `BASELINE_PATTERNS` is for the bootstrap — it ensures new GSD projects also get these patterns.
+- `src/resources/extensions/gsd/types.ts` (line 161) — `RequirementCounts` interface is just aggregate counts. No `Decision` or `Requirement` typed interface exists — S01 must define these as row types for the DB layer.
+- `src/resources/extensions/gsd/state.ts` — `deriveState()` populates `recentDecisions: string[]` (always empty array currently — line 198, 329, 348, etc.) and `requirements?: RequirementCounts`. S04 will rewire these to DB queries.
+- `packages/pi-coding-agent/src/resources/extensions/memory/storage.ts` — Existing `sql.js`-based SQLite DB in the `memory` extension. Uses async init + manual buffer-to-file persist. Different approach from `better-sqlite3` (sync, direct file). The two coexist without conflict in different extensions.
+- `package.json` `optionalDependencies` — Already declares `@gsd-build/engine-*` and `koffi` as optional. `better-sqlite3` goes here, following the same pattern.
+- `tsconfig.json` — `"module": "NodeNext"`, `"target": "ES2022"`, `"strict": true`. Tests run with `node --test --experimental-strip-types`. Resource files (`src/resources/`) are excluded from tsc compilation and copied raw.
 
 ## Constraints
 
-- **ESM project with CJS native addon loading**: The project is `"type": "module"` but native addons use `require()` (see `native-parser-bridge.ts`). `better-sqlite3` must be loaded via `require()` or `createRequire()`, not `import()`. The existing bridges already solved this.
-- **Sync API required**: All prompt building in `auto.ts` is synchronous (no `await` for file reads after `inlineGsdRootFile()` returns). `better-sqlite3`'s sync API is a hard requirement — async alternatives like `sql.js` won't work without rewriting the entire prompt builder chain.
-- **Node 22 + arm64 darwin**: Current target is `v22.20.0 arm64 darwin`. `better-sqlite3@12.x` provides prebuilt binaries for this via `prebuild-install`. No compilation needed.
-- **Schema must be future-proof for vector search (R021)**: Decisions use auto-increment `seq` as PK; requirements use stable `id` (R001, R002...). Both must be joinable by future embedding tables. Use INTEGER and TEXT PKs respectively — no composite PKs that would complicate joins.
-- **`.gsd/gsd.db` must be gitignored**: It's derived local state. WAL auxiliary files (`-wal`, `-shm`) must also be gitignored.
-- **Test runner uses `--experimental-strip-types`**: Tests import `.ts` files directly with the `resolve-ts.mjs` hook. New test files must follow this pattern.
+- **ESM project with `"type": "module"`** — `import Database from 'better-sqlite3'` works (verified). For lazy loading, use dynamic `import()` or `createRequire` from `node:module`. The `native-parser-bridge.ts` uses `require()` which works because `src/resources/` is excluded from tsc and copied raw — same would apply to `gsd-db.ts`.
+- **Sync API required** — All `build*Prompt()` functions in `auto.ts` are async at the function level but data loading within them is synchronous (`existsSync`, `readFileSync` via helpers). `better-sqlite3` is sync by design — perfect fit.
+- **WAL sidecar files** — `PRAGMA journal_mode = WAL` creates `gsd.db-wal` and `gsd.db-shm` files during runtime. These are cleaned up on proper `db.close()` but survive crashes. Must be gitignored.
+- **`optionalDependency` declaration** — `better-sqlite3` must be optional so `npm install` succeeds even if the native addon fails to build. `@types/better-sqlite3` is a `devDependency`.
+- **Schema forward-compatibility (R021)** — PKs must be stable and joinable by future embedding virtual tables. Decisions: `seq INTEGER PRIMARY KEY AUTOINCREMENT`. Requirements: `id TEXT PRIMARY KEY` (e.g., "R001"). Both allow `CREATE VIRTUAL TABLE embeddings USING vec0(decision_seq INTEGER, ...)` later.
+- **Node ≥20.6.0** — Engine requirement. `better-sqlite3@12.x` declares `"node": "20.x || 22.x || 23.x || 24.x || 25.x"` — compatible.
+- **Test runner is `node --test`** — Not vitest/jest. Tests use `createTestContext()` from `test-helpers.ts` with custom `assertEq`/`assertTrue`/`report` functions. DB tests must follow this pattern.
 
 ## Common Pitfalls
 
-- **WAL mode on in-memory databases**: `PRAGMA journal_mode=WAL` silently falls back to `memory` mode for `:memory:` databases. Tests using in-memory DBs won't actually test WAL. Use temp-file DBs in tests that verify WAL behavior specifically, but `:memory:` is fine for schema/query tests.
-- **require() in ESM modules**: Bare `require('better-sqlite3')` won't work in ESM. Must use `createRequire(import.meta.url)` or the existing pattern from native-parser-bridge which already handles this with `// eslint-disable-next-line @typescript-eslint/no-require-imports`.
-- **Schema version race conditions**: If two processes open the DB simultaneously (e.g., pi session + worktree), both might try to run migrations. Use `BEGIN IMMEDIATE` transaction for migration to get a write lock. WAL mode allows concurrent readers during this.
-- **Foreign key enforcement**: SQLite has foreign keys disabled by default. Must run `PRAGMA foreign_keys = ON` after opening if any tables use FK constraints. For S01, decisions and requirements are standalone tables, but set the pattern now for S02+ tables.
-- **TEXT vs JSON columns**: For fields like `supporting_slices` that hold arrays, use TEXT with comma-separated values or JSON. JSON would require `json_each()` for queries. Comma-separated is simpler for the S01 scope and matches the markdown format (e.g., `"M001/S03, M001/S06"`).
-- **Prepared statement caching**: `better-sqlite3` statements should be prepared once and reused, not re-prepared per call. The `db.prepare()` result should be cached at module scope or in a statement cache object.
+- **Top-level `require('better-sqlite3')`** — Crashes the process if the native addon failed to build. Must use the lazy-load pattern: a function called on first DB access, with try/catch, setting a module-level `loadAttempted` sentinel. Identical to `native-parser-bridge.ts` lines 23–43.
+- **WAL sidecar files not gitignored** — A crash leaves `gsd.db-wal` and `gsd.db-shm` on disk. If not in `BASELINE_PATTERNS`, they appear as untracked files. Add all three file patterns.
+- **`PRAGMA user_version` starts at 0** — Fresh SQLite DBs return `user_version = 0`. Must distinguish "never initialized" (no tables exist) from "schema version 0" to avoid re-running `initSchema()`. Check for table existence first (`SELECT name FROM sqlite_master WHERE type='table' AND name='decisions'`), then check `user_version` for migrations.
+- **`db.pragma()` return format** — Without `{ simple: true }`, `db.pragma('journal_mode')` returns `[{ journal_mode: 'wal' }]`. With `{ simple: true }`, returns the scalar `'wal'`. Always use `{ simple: true }` for reads.
+- **Decisions `superseded_by` inference** — The DECISIONS.md table has no explicit `superseded_by` column. When importing (S02), must infer from row content or default to `NULL`. The `active_decisions` view (`WHERE superseded_by IS NULL`) works correctly with this — all imported decisions start as active. Future decision rows can explicitly reference what they supersede.
+- **Requirement `id` as PK** — R001, R002... are globally unique within the project. The REQUIREMENTS.md format uses `### Rxx — Title` headings with dash-separated fields below. The schema must accommodate the full field set (Class, Status, Description, Why it matters, Source, Primary owning slice, Supporting slices, Validation, Notes).
+- **DB close on process exit** — Must register a cleanup handler (process `beforeExit` or `exit` event) to call `db.close()`. Otherwise WAL files linger and the DB may not be fully checkpointed. However, SQLite self-repairs on next open, so this is a cleanliness concern, not a data-loss risk.
+- **Transaction performance** — 1000 individual inserts: ~100ms. Same 1000 inserts in a single transaction: ~5ms. Always wrap bulk operations in `db.transaction()`.
 
 ## Open Risks
 
-- **`better-sqlite3` prebuilt binary freshness**: Node 22.20.0 is very recent. If `prebuild-install` doesn't have binaries for this exact Node version, it falls back to compiling from source, requiring `node-gyp` + Python + C++ compiler. This is exactly why graceful fallback (R002) is critical. Verified: `npm install better-sqlite3` succeeds on the target platform without compilation.
-- **Package distribution impact**: Adding `better-sqlite3` to `optionalDependencies` increases npm package size by ~5MB (prebuilt native addon). This is acceptable for the token savings it delivers, but worth noting.
-- **Schema evolution between S01 and S02**: S01 defines the schema for decisions and requirements only. S02 will add tables for roadmaps, plans, summaries, etc. The migration system must handle adding tables to an existing DB without data loss. Design the migration runner to handle version 1→2→3→...N upgrades.
-- **In-memory WAL verification gap**: As noted in pitfalls, in-memory DBs don't actually use WAL mode. The R020 requirement (WAL enabled) needs a file-based test to truly verify. The platform proof-of-concept confirmed WAL works on file-based DBs.
+- **`better-sqlite3` native build on exotic platforms** — Prebuilt binaries may not cover Alpine Linux, musl libc, or unusual architectures. These platforms require `node-gyp` + build tools (`python3`, `make`, `gcc`/`g++`). The graceful fallback (R002) makes this a non-fatal degradation. Low risk for typical use.
+- **Schema evolution across slices** — S01 creates decisions + requirements tables. S02–S03 add 8+ more tables (milestones, slices, tasks, roadmaps, plans, summaries, contexts, research). Schema migrations via `user_version` must handle incremental additions without data loss. Use `CREATE TABLE IF NOT EXISTS` for new tables and `ALTER TABLE ADD COLUMN` for additions to existing tables.
+- **`node:sqlite` stabilization** — Available in Node 22 as experimental (prints warning). If it stabilizes and becomes the standard, `better-sqlite3` becomes unnecessary tech debt. Low risk — D001 is non-revisable, and the fallback architecture means swapping implementations later is straightforward. The API surface is similar.
+- **Two SQLite libraries in the project** — `sql.js` (memory extension) and `better-sqlite3` (GSD DB). Different extensions, different loading patterns, no conflict. Could eventually consolidate but out of scope for M001.
+- **Process crash leaving DB in unexpected state** — WAL mode handles this gracefully — SQLite replays the WAL on next open. No special recovery code needed. The sidecar files are harmless artifacts of an incomplete checkpoint.
 
 ## Skills Discovered
 
 | Technology | Skill | Status |
 |------------|-------|--------|
-| SQLite / better-sqlite3 | `martinholovsky/claude-skills-generator@sqlite database expert` | available (544 installs) |
+| SQLite | `martinholovsky/claude-skills-generator@sqlite-database-expert` | available (544 installs) — general SQLite expertise, not specific to better-sqlite3. Not recommended — the better-sqlite3 docs and existing codebase patterns are sufficient. |
+| better-sqlite3 | (none found) | none found |
 
-Low relevance — the skill is generic SQLite guidance, not specific to `better-sqlite3` patterns or GSD's architecture. The library docs from Context7 and the existing native-bridge patterns provide better guidance than a generic skill.
+No skills are directly relevant enough to recommend installing.
 
 ## Sources
 
-- `better-sqlite3` API: WAL mode, prepared statements, transactions (source: [Context7 better-sqlite3 docs](https://context7.com/wiselibs/better-sqlite3))
-- `better-sqlite3` current version is 12.8.0, `@types/better-sqlite3` is 7.6.13 (source: npm registry)
-- `node:sqlite` is available in Node 22 but still experimental, lacks `.pragma()` method (source: local runtime verification)
-- Platform verification: `better-sqlite3` installs and runs correctly on Node v22.20.0 arm64 darwin with 0.01ms avg query latency (source: local proof-of-concept)
+- `better-sqlite3@12.8.0` installs on Node 22.20.0 arm64 darwin via native addon compilation (source: local `npm install` verification in `/tmp/sqlite-test`)
+- WAL mode confirmed on file-backed DB: `db.pragma('journal_mode = WAL')` returns `'wal'` (source: local Node.js verification)
+- Query latency verified at ~0.012ms per query (1000 scoped queries in 11.77ms) (source: local benchmark in `/tmp/sqlite-test`)
+- ESM default import works: `import Database from 'better-sqlite3'` (source: local `--input-type=module` verification)
+- `node:sqlite` experimental in Node 22, prints `ExperimentalWarning` (source: local `require('node:sqlite')` verification)
+- `better-sqlite3` API: `.pragma()`, `.prepare()`, `.transaction()`, `.exec()`, constructor options (source: [Context7 better-sqlite3 docs](https://context7.com/wiselibs/better-sqlite3/llms.txt))
+- Fallback pattern proven in `native-parser-bridge.ts` with lazy require + sentinel (source: codebase `src/resources/extensions/gsd/native-parser-bridge.ts`)
+- `@types/better-sqlite3` available as community-maintained package (source: [better-sqlite3 contribution docs](https://github.com/wiselibs/better-sqlite3/blob/master/docs/contribution.md))

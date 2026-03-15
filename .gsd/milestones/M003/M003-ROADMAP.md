@@ -59,7 +59,7 @@ This milestone is complete only when all are true:
 - [x] **S02: --no-ff slice merges + conflict elimination** `risk:high` `depends:[S01]`
   > After this: completed slices merge into the milestone branch via `--no-ff` instead of squash. The `.gsd/` auto-resolve conflict code in `mergeSliceToMain` is bypassed in worktree mode. `git log` on the milestone branch shows full commit history with merge commit boundaries per slice. Verified in temp repo.
 
-- [ ] **S03: Milestone-to-main squash merge + worktree teardown** `risk:high` `depends:[S01,S02]`
+- [x] **S03: Milestone-to-main squash merge + worktree teardown** `risk:high` `depends:[S01,S02]`
   > After this: `complete-milestone` squash-merges the milestone branch to main with a rich commit message listing all slices, removes the worktree, `chdir`s back to the main project root. `git log main` shows one clean commit. Auto-push works if enabled. Verified in temp repo with remote.
 
 - [ ] **S04: Preferences + backwards compatibility** `risk:medium` `depends:[S01]`
