@@ -320,3 +320,73 @@ test("verifyExpectedArtifact detects roadmap [x] change despite parse cache", ()
     cleanup(base);
   }
 });
+
+// ─── verifyExpectedArtifact: plan-slice task plan check (#739) ────────────
+
+test("verifyExpectedArtifact plan-slice passes when all task plan files exist", () => {
+  const base = makeTmpBase();
+  try {
+    const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+    const planPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md");
+    const planContent = [
+      "# S01: Test Slice",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] **T01: First task** `est:1h`",
+      "- [ ] **T02: Second task** `est:2h`",
+    ].join("\n");
+    writeFileSync(planPath, planContent);
+    writeFileSync(join(tasksDir, "T01-PLAN.md"), "# T01 Plan\n\nDo the thing.");
+    writeFileSync(join(tasksDir, "T02-PLAN.md"), "# T02 Plan\n\nDo the other thing.");
+
+    const result = verifyExpectedArtifact("plan-slice", "M001/S01", base);
+    assert.equal(result, true, "should pass when all task plan files exist");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("verifyExpectedArtifact plan-slice fails when a task plan file is missing (#739)", () => {
+  const base = makeTmpBase();
+  try {
+    const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+    const planPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md");
+    const planContent = [
+      "# S01: Test Slice",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] **T01: First task** `est:1h`",
+      "- [ ] **T02: Second task** `est:2h`",
+    ].join("\n");
+    writeFileSync(planPath, planContent);
+    // Only write T01-PLAN.md — T02 is missing
+    writeFileSync(join(tasksDir, "T01-PLAN.md"), "# T01 Plan\n\nDo the thing.");
+
+    const result = verifyExpectedArtifact("plan-slice", "M001/S01", base);
+    assert.equal(result, false, "should fail when T02-PLAN.md is missing");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("verifyExpectedArtifact plan-slice passes for plan with no tasks", () => {
+  const base = makeTmpBase();
+  try {
+    const planPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md");
+    const planContent = [
+      "# S01: Test Slice",
+      "",
+      "## Goal",
+      "",
+      "Just some documentation updates, no tasks.",
+    ].join("\n");
+    writeFileSync(planPath, planContent);
+
+    const result = verifyExpectedArtifact("plan-slice", "M001/S01", base);
+    assert.equal(result, true, "should pass when plan has no tasks");
+  } finally {
+    cleanup(base);
+  }
+});
