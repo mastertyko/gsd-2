@@ -130,4 +130,24 @@ function initGit(dir: string): void {
   } finally { cleanup(outer); cleanup(emptyExternal); }
 }
 
+{
+  // Case 8: subdirectory .gsd symlink to POPULATED state dir still loses to git-root .gsd (#2255)
+  // Even when the subdirectory symlink points to a fully-populated .gsd with milestones,
+  // the git-root .gsd takes precedence — the canonical project .gsd always lives at git root.
+  const outer = tmp();
+  const populatedExternal = tmp();
+  try {
+    initGit(outer);
+    mkdirSync(join(outer, ".gsd", "milestones", "M001"), { recursive: true });
+    const sub = join(outer, "packages", "app");
+    mkdirSync(sub, { recursive: true });
+    // Create a populated external state dir with its own milestones
+    mkdirSync(join(populatedExternal, "milestones", "M002"), { recursive: true });
+    symlinkSync(populatedExternal, join(sub, ".gsd"), "junction");
+    _clearGsdRootCache();
+    const result = gsdRoot(sub);
+    assertEq(result, join(outer, ".gsd"), "populated subdirectory symlink: git-root .gsd still wins (#2255)");
+  } finally { cleanup(outer); cleanup(populatedExternal); }
+}
+
 report();
