@@ -1285,7 +1285,7 @@ export function mergeMilestoneToMain(
   // 11. Remove worktree directory first (must happen before branch deletion)
   try {
     removeWorktree(originalBasePath_, milestoneId, {
-      branch: null as unknown as string,
+      branch: milestoneBranch,
       deleteBranch: false,
     });
   } catch {
