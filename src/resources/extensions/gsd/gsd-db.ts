@@ -1579,6 +1579,30 @@ export function deleteSlice(milestoneId: string, sliceId: string): void {
   ).run({ ":mid": milestoneId, ":sid": sliceId });
 }
 
+export function updateSliceFields(milestoneId: string, sliceId: string, fields: {
+  title?: string;
+  risk?: string;
+  depends?: string[];
+  demo?: string;
+}): void {
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  currentDb.prepare(
+    `UPDATE slices SET
+      title = COALESCE(:title, title),
+      risk = COALESCE(:risk, risk),
+      depends = COALESCE(:depends, depends),
+      demo = COALESCE(:demo, demo)
+     WHERE milestone_id = :milestone_id AND id = :id`,
+  ).run({
+    ":milestone_id": milestoneId,
+    ":id": sliceId,
+    ":title": fields.title ?? null,
+    ":risk": fields.risk ?? null,
+    ":depends": fields.depends ? JSON.stringify(fields.depends) : null,
+    ":demo": fields.demo ?? null,
+  });
+}
+
 export function getReplanHistory(milestoneId: string, sliceId?: string): Array<Record<string, unknown>> {
   if (!currentDb) return [];
   if (sliceId) {
@@ -1589,4 +1613,12 @@ export function getReplanHistory(milestoneId: string, sliceId?: string): Array<R
   return currentDb.prepare(
     `SELECT * FROM replan_history WHERE milestone_id = :mid ORDER BY created_at DESC`,
   ).all({ ":mid": milestoneId });
+}
+
+export function getAssessment(path: string): Record<string, unknown> | null {
+  if (!currentDb) return null;
+  const row = currentDb.prepare(
+    `SELECT * FROM assessments WHERE path = :path`,
+  ).get({ ":path": path });
+  return row ?? null;
 }
