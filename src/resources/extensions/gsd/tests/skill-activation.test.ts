@@ -192,10 +192,11 @@ test("buildSkillActivationBlock does not activate skills from extraContext or ta
   }
 });
 
-test("buildSkillActivationBlock handles skill names with special characters safely", () => {
+test("buildSkillActivationBlock rejects skill names with special characters", () => {
   const base = makeTempBase();
   try {
-    // Skill names come from directory names — test that quotes/braces don't break the template
+    // Skill names with quotes, braces, or other non-alphanumeric characters are
+    // rejected by the SAFE_SKILL_NAME guard to prevent prompt injection.
     writeSkill(base, "my-skill's", "Skill with apostrophe in name.");
     loadOnlyTestSkills(base);
 
@@ -203,10 +204,29 @@ test("buildSkillActivationBlock handles skill names with special characters safe
       always_use_skills: ["my-skill's"],
     });
 
-    // The skill name is interpolated as-is — this documents current behavior.
-    // A future guard (e.g. /^[a-z0-9-]+$/) could reject such names.
+    // Unsafe skill name is filtered out — empty result
+    assert.equal(result, "");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("buildSkillActivationBlock allows valid skill names and rejects invalid ones", () => {
+  const base = makeTempBase();
+  try {
+    writeSkill(base, "react", "React skill.");
+    writeSkill(base, "bad'name", "Injection attempt.");
+    writeSkill(base, "good-skill-2", "Another valid skill.");
+    loadOnlyTestSkills(base);
+
+    const result = buildBlock(base, {}, {
+      always_use_skills: ["react", "bad'name", "good-skill-2"],
+    });
+
     assert.match(result, /skill_activation/);
-    assert.match(result, /my-skill's/);
+    assert.match(result, /Call Skill\(\{ skill: 'react' \}\)/);
+    assert.match(result, /Call Skill\(\{ skill: 'good-skill-2' \}\)/);
+    assert.doesNotMatch(result, /bad'name/);
   } finally {
     cleanup(base);
   }
