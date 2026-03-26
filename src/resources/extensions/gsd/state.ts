@@ -211,7 +211,24 @@ export async function deriveState(basePath: string): Promise<GSDState> {
 
   // Dual-path: try DB-backed derivation first when hierarchy tables are populated
   if (isDbAvailable()) {
-    const dbMilestones = getAllMilestones();
+    let dbMilestones = getAllMilestones();
+
+    // Disk→DB reconciliation (#2631): when the milestones table is empty
+    // (e.g. failed initial migration per #2529), the reconciliation code
+    // inside deriveStateFromDb is unreachable. Populate from disk here so
+    // the DB path activates correctly.
+    if (dbMilestones.length === 0) {
+      const diskIds = findMilestoneIds(basePath);
+      let synced = false;
+      for (const diskId of diskIds) {
+        if (!isGhostMilestone(basePath, diskId)) {
+          insertMilestone({ id: diskId, status: 'active' });
+          synced = true;
+        }
+      }
+      if (synced) dbMilestones = getAllMilestones();
+    }
+
     if (dbMilestones.length > 0) {
       const stopDbTimer = debugTime("derive-state-db");
       result = await deriveStateFromDb(basePath);
@@ -562,7 +579,10 @@ export async function deriveStateFromDb(basePath: string): Promise<GSDState> {
   }
 
   // ── All slices done → validating/completing ─────────────────────────
-  const allSlicesDone = activeMilestoneSlices.every(s => isStatusDone(s.status));
+  // Guard: [].every() === true (vacuous truth). Without the length check,
+  // an empty slice array causes a premature phase transition to
+  // validating-milestone. See: https://github.com/gsd-build/gsd-2/issues/2667
+  const allSlicesDone = activeMilestoneSlices.length > 0 && activeMilestoneSlices.every(s => isStatusDone(s.status));
   if (allSlicesDone) {
     const validationFile = resolveMilestoneFile(basePath, activeMilestone.id, "VALIDATION");
     const validationContent = validationFile ? await loadFile(validationFile) : null;
