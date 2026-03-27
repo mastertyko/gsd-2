@@ -89,6 +89,7 @@ import { ToolExecutionComponent } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
+import { replaceClipboardImageMarkers } from "./clipboard-markers.js";
 import { type SlashCommandContext, dispatchSlashCommand, getAppKeyDisplay } from "./slash-command-handlers.js";
 import { handleAgentEvent } from "./controllers/chat-controller.js";
 import { createExtensionUIContext as buildExtensionUIContext } from "./controllers/extension-ui-controller.js";
@@ -596,7 +597,7 @@ export class InteractiveMode {
 
 		// Main interactive loop
 		while (true) {
-			const userInput = this.expandClipboardImageMarkers(await this.getUserInput());
+			const userInput = this.consumeClipboardImageMarkers(await this.getUserInput());
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
@@ -1965,12 +1966,9 @@ export class InteractiveMode {
 	 * Expand [image #N] markers back to file paths before sending to the model.
 	 * Clears tracked images after expansion.
 	 */
-	private expandClipboardImageMarkers(text: string): string {
+	private consumeClipboardImageMarkers(text: string): string {
 		if (this.clipboardImages.size === 0) return text;
-		let result = text;
-		for (const [imageId, filePath] of this.clipboardImages) {
-			result = result.replace(`[image #${imageId}]`, filePath);
-		}
+		const result = replaceClipboardImageMarkers(text, this.clipboardImages);
 		this.clipboardImages.clear();
 		this.clipboardImageCounter = 0;
 		return result;
@@ -2388,7 +2386,7 @@ export class InteractiveMode {
 	private async handleFollowUp(): Promise<void> {
 		const rawText = (this.editor.getExpandedText?.() ?? this.editor.getText()).trim();
 		if (!rawText) return;
-		const text = this.expandClipboardImageMarkers(rawText);
+		const text = this.consumeClipboardImageMarkers(rawText);
 
 		// Queue input during compaction (extension commands execute immediately)
 		if (this.session.isCompacting) {
