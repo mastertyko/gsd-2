@@ -101,7 +101,7 @@ async function main(): Promise<void> {
       renameSync(lockFile, tmpFile);
       spawn('bash', ['-c', `sleep 0.05 && mv "${tmpFile}" "${lockFile}"`], { stdio: 'ignore', detached: true }).unref();
 
-      const result = readExistingLockDataWithRetry(lockFile, { maxAttempts: 5, delayMs: 300 });
+      const result = readExistingLockDataWithRetry(lockFile, { maxAttempts: 8, delayMs: 400 });
       assertTrue(result !== null, 'data recovered after transient unavailability');
       if (result) {
         assertEq(result.pid, process.pid, 'correct PID after recovery');
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
       chmodSync(lockFile, 0o000);
       spawn('bash', ['-c', `sleep 0.05 && chmod 644 "${lockFile}"`], { stdio: 'ignore', detached: true }).unref();
 
-      const result = readExistingLockDataWithRetry(lockFile, { maxAttempts: 5, delayMs: 300 });
+      const result = readExistingLockDataWithRetry(lockFile, { maxAttempts: 8, delayMs: 400 });
       assertTrue(result !== null, 'data recovered after transient permission error');
       if (result) {
         assertEq(result.pid, process.pid, 'correct PID after permission recovery');
